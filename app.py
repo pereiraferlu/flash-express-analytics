@@ -260,18 +260,22 @@ def _read_xls_biff8_native(raw: bytes) -> "pd.DataFrame":
     if stream is None:
         raise ValueError("No se encontró el stream Workbook en el OLE2")
 
-    # ── Parsear SST ──────────────────────────────────────────────
+    # ── Parsear SST (con soporte de CONTINUE y grbit mid-string) ─────
     sst = []
     pos = sst_end = 0
     while pos < len(stream) - 4:
         rt = _s.unpack_from('<H', stream, pos)[0]
         rl = _s.unpack_from('<H', stream, pos + 2)[0]
-        if rt == 0x00fc:                   # SST
+        if rt == 0x00fc:                        # SST
             chunks = [stream[pos+4:pos+4+rl]]
+            # Marcar posición en el body donde empieza cada CONTINUE
+            # (ese primer byte es el grbit de la cadena que cruza el límite)
+            bnd = set()                         # posiciones de bytes grbit en el body
             p2 = pos + 4 + rl
-            while p2 < len(stream) - 4:   # absorber CONTINUE
-                if _s.unpack_from('<H', stream, p2)[0] != 0x00fe: break
+            while p2 < len(stream) - 4:        # absorber CONTINUE (0x003c, NO 0x00fe)
+                if _s.unpack_from('<H', stream, p2)[0] != 0x003c: break
                 cl = _s.unpack_from('<H', stream, p2+2)[0]
+                bnd.add(sum(len(c) for c in chunks))   # posición del grbit en body
                 chunks.append(stream[p2+4:p2+4+cl]); p2 += 4 + cl
             sst_end = p2
             body = b''.join(chunks)
@@ -280,16 +284,24 @@ def _read_xls_biff8_native(raw: bytes) -> "pd.DataFrame":
             for _ in range(unique):
                 if bp + 3 > len(body): break
                 slen = _s.unpack_from('<H', body, bp)[0]
-                fl = body[bp+2]; bp += 3
+                fl   = body[bp+2]; bp += 3
+                is_uni = bool(fl & 1)
                 nr = 0; az = 0
                 if fl & 8 and bp+2 <= len(body): nr = _s.unpack_from('<H', body, bp)[0]; bp += 2
                 if fl & 4 and bp+4 <= len(body): az = _s.unpack_from('<I', body, bp)[0]; bp += 4
-                if fl & 1:
-                    sv = body[bp:bp+slen*2].decode('utf-16-le', errors='replace'); bp += slen*2
-                else:
-                    sv = body[bp:bp+slen].decode('latin-1', errors='replace'); bp += slen
+                # Leer caracteres de a uno; en límites CONTINUE leer grbit y actualizar encoding
+                buf = []
+                for _ in range(slen):
+                    if bp in bnd:               # límite de CONTINUE: byte grbit
+                        is_uni = bool(body[bp] & 1); bp += 1
+                    if is_uni:
+                        if bp + 2 > len(body): break
+                        buf.append(chr(_s.unpack_from('<H', body, bp)[0])); bp += 2
+                    else:
+                        if bp >= len(body): break
+                        buf.append(chr(body[bp])); bp += 1
                 bp += nr*4 + az
-                sst.append(sv)
+                sst.append(''.join(buf))
             break
         pos += 4 + rl
 
@@ -578,13 +590,17 @@ def _agg_distrib(df):
     return g.sort_values("Total",ascending=False).reset_index(drop=True).rename(columns={COL_DISTRIB:"Distribuidor"})
 
 def _agg_fecha(df):
-    """Usa la columna de fecha correcta (Datos Varios / col AF)."""
+    """Usa la columna de fecha correcta (Datos Varios / col AF), con fallback a Fecha Ingreso."""
     d    = df.copy()
     fcol = get_fecha_col(d)
     if fcol is None:
         d["_f"] = "Sin fecha"
     else:
         d["_dt"] = pd.to_datetime(d[fcol], dayfirst=True, errors="coerce")
+        # Fallback a "Fecha Ingreso" (col A) para filas donde la col principal está vacía
+        if "Fecha Ingreso" in d.columns and d["_dt"].isna().any():
+            _fb = pd.to_datetime(d["Fecha Ingreso"], dayfirst=True, errors="coerce")
+            d["_dt"] = d["_dt"].fillna(_fb)
         d["_f"]  = d["_dt"].dt.strftime("%Y-%m-%d").fillna("Sin fecha")
     d["_e"] = is_ent(safe(d,COL_ESTADO)).astype(int)
     d["_b"] = pd.to_numeric(safe(d,COL_BULTO), errors="coerce").fillna(0)
@@ -600,7 +616,10 @@ def _agg_dow(df):
     if fcol is None:
         return pd.DataFrame({"Dia":["Lunes","Martes","Miércoles","Jueves","Viernes","Sábado","Domingo"],
                               "Total":[0]*7})
-    d["_dt"]  = pd.to_datetime(d[fcol], dayfirst=True, errors="coerce")
+    d["_dt"] = pd.to_datetime(d[fcol], dayfirst=True, errors="coerce")
+    if "Fecha Ingreso" in d.columns and d["_dt"].isna().any():
+        _fb = pd.to_datetime(d["Fecha Ingreso"], dayfirst=True, errors="coerce")
+        d["_dt"] = d["_dt"].fillna(_fb)
     d["_dow"] = d["_dt"].dt.dayofweek
     d = d.dropna(subset=["_dow"])
     dow_map = {0:"Lunes",1:"Martes",2:"Miércoles",3:"Jueves",4:"Viernes",5:"Sábado",6:"Domingo"}
@@ -619,7 +638,10 @@ def _agg_dow_by_client(df):
                               "Dia":  [dow_map[i] for i in range(7)]})
     if fcol is None or COL_CLIENTE not in d.columns:
         return pd.DataFrame(), []
-    d["_dt"]  = pd.to_datetime(d[fcol], dayfirst=True, errors="coerce")
+    d["_dt"] = pd.to_datetime(d[fcol], dayfirst=True, errors="coerce")
+    if "Fecha Ingreso" in d.columns and d["_dt"].isna().any():
+        _fb = pd.to_datetime(d["Fecha Ingreso"], dayfirst=True, errors="coerce")
+        d["_dt"] = d["_dt"].fillna(_fb)
     d["_dow"] = d["_dt"].dt.dayofweek
     d = d.dropna(subset=["_dow"])
     d["_dow"] = d["_dow"].astype(int)
