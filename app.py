@@ -191,6 +191,26 @@ TOOLBAR = {
 MES_ES = {1:"Ene",2:"Feb",3:"Mar",4:"Abr",5:"May",6:"Jun",
           7:"Jul",8:"Ago",9:"Sep",10:"Oct",11:"Nov",12:"Dic"}
 
+def _parse_fecha_col(series: "pd.Series") -> "pd.Series":
+    """Convierte una columna de fechas que puede ser string ('dd-mm-yyyy'),
+    o número serial de Excel (days since 1899-12-30) a datetime."""
+    import pandas as _pd
+    # Intentar como string primero
+    dt = _pd.to_datetime(series, dayfirst=True, errors="coerce")
+    # Para celdas que no parsearon como string, intentar como serial Excel
+    mask_nat = dt.isna()
+    if mask_nat.any():
+        nums = _pd.to_numeric(series[mask_nat], errors="coerce")
+        valid_nums = nums[nums.notna() & (nums > 1)]   # seriales > 1 = fechas reales
+        if not valid_nums.empty:
+            # Excel serial: días desde 1899-12-30
+            excel_epoch = _pd.Timestamp("1899-12-30")
+            xl_dates = valid_nums.apply(
+                lambda n: excel_epoch + _pd.Timedelta(days=int(n)))
+            dt = dt.copy()
+            dt.update(xl_dates)
+    return dt
+
 def fecha_corta(fecha_str):
     try:
         dt = pd.to_datetime(fecha_str)
@@ -283,6 +303,11 @@ def _read_xls_biff8_native(raw: bytes) -> "pd.DataFrame":
             bp = 8
             for _ in range(unique):
                 if bp + 3 > len(body): break
+                # Consumir cualquier límite CONTINUE que quede ANTES del inicio
+                # de esta cadena (ocurre cuando el salto de rich-text de la
+                # cadena anterior terminó exactamente en un límite).
+                while bnd and min(bnd) < bp:
+                    bnd.discard(min(bnd))
                 slen = _s.unpack_from('<H', body, bp)[0]
                 fl   = body[bp+2]; bp += 3
                 is_uni = bool(fl & 1)
@@ -293,6 +318,7 @@ def _read_xls_biff8_native(raw: bytes) -> "pd.DataFrame":
                 buf = []
                 for _ in range(slen):
                     if bp in bnd:               # límite de CONTINUE: byte grbit
+                        bnd.discard(bp)
                         is_uni = bool(body[bp] & 1); bp += 1
                     if is_uni:
                         if bp + 2 > len(body): break
@@ -571,9 +597,10 @@ def plain_table(g: pd.DataFrame, num_cols: list, pct_cols: list = []):
 #  AGREGACIONES
 # ═══════════════════════════════════════════════════════════════════════════
 def _agg_clientes(df):
-    g = (df.assign(_e=is_ent(safe(df,COL_ESTADO)).astype(int),
-                   _b=pd.to_numeric(safe(df,COL_BULTO),errors="coerce").fillna(0))
-           .groupby(COL_CLIENTE, as_index=False)
+    _df = df[safe(df,COL_CLIENTE).str.strip().ne('')].copy() if COL_CLIENTE in df.columns else df
+    g = (_df.assign(_e=is_ent(safe(_df,COL_ESTADO)).astype(int),
+                    _b=pd.to_numeric(safe(_df,COL_BULTO),errors="coerce").fillna(0))
+            .groupby(COL_CLIENTE, as_index=False)
            .agg(Total=(COL_PIEZA,"count"), Entregados=("_e","sum"), Bultos=("_b","sum")))
     g["Pendientes"]    = g["Total"] - g["Entregados"]
     g["% Efectividad"] = (g["Entregados"]/g["Total"]*100).round(1)
@@ -596,10 +623,10 @@ def _agg_fecha(df):
     if fcol is None:
         d["_f"] = "Sin fecha"
     else:
-        d["_dt"] = pd.to_datetime(d[fcol], dayfirst=True, errors="coerce")
+        d["_dt"] = _parse_fecha_col(d[fcol])
         # Fallback a "Fecha Ingreso" (col A) para filas donde la col principal está vacía
         if "Fecha Ingreso" in d.columns and d["_dt"].isna().any():
-            _fb = pd.to_datetime(d["Fecha Ingreso"], dayfirst=True, errors="coerce")
+            _fb = _parse_fecha_col(d["Fecha Ingreso"])
             d["_dt"] = d["_dt"].fillna(_fb)
         d["_f"]  = d["_dt"].dt.strftime("%Y-%m-%d").fillna("Sin fecha")
     d["_e"] = is_ent(safe(d,COL_ESTADO)).astype(int)
@@ -616,9 +643,9 @@ def _agg_dow(df):
     if fcol is None:
         return pd.DataFrame({"Dia":["Lunes","Martes","Miércoles","Jueves","Viernes","Sábado","Domingo"],
                               "Total":[0]*7})
-    d["_dt"] = pd.to_datetime(d[fcol], dayfirst=True, errors="coerce")
+    d["_dt"] = _parse_fecha_col(d[fcol])
     if "Fecha Ingreso" in d.columns and d["_dt"].isna().any():
-        _fb = pd.to_datetime(d["Fecha Ingreso"], dayfirst=True, errors="coerce")
+        _fb = _parse_fecha_col(d["Fecha Ingreso"])
         d["_dt"] = d["_dt"].fillna(_fb)
     d["_dow"] = d["_dt"].dt.dayofweek
     d = d.dropna(subset=["_dow"])
@@ -638,9 +665,9 @@ def _agg_dow_by_client(df):
                               "Dia":  [dow_map[i] for i in range(7)]})
     if fcol is None or COL_CLIENTE not in d.columns:
         return pd.DataFrame(), []
-    d["_dt"] = pd.to_datetime(d[fcol], dayfirst=True, errors="coerce")
+    d["_dt"] = _parse_fecha_col(d[fcol])
     if "Fecha Ingreso" in d.columns and d["_dt"].isna().any():
-        _fb = pd.to_datetime(d["Fecha Ingreso"], dayfirst=True, errors="coerce")
+        _fb = _parse_fecha_col(d["Fecha Ingreso"])
         d["_dt"] = d["_dt"].fillna(_fb)
     d["_dow"] = d["_dt"].dt.dayofweek
     d = d.dropna(subset=["_dow"])
@@ -1192,6 +1219,12 @@ def build_full_excel(df: pd.DataFrame, tarifa_map: dict = None) -> bytes:
         "align": "left", "valign": "vcenter", "bold": True,
     })
     ws_d.write(last_data_row, DT_START_COL + 1, "Total Pedidos", fmt_id_total_left)
+    # Post-write "Total a Cobrar" en columna VALOR DECLARADO alineado a la derecha
+    fmt_valdec_total = wb.add_format({
+        "font_name": F_TBL, "font_size": S_TBL,
+        "align": "right", "valign": "vcenter", "bold": True,
+    })
+    ws_d.write(last_data_row, DT_START_COL + DT_VALDEC_COL, "Total a Cobrar", fmt_valdec_total)
 
 
     # ═══════════════════════════════════════════════════════════════
@@ -1431,28 +1464,33 @@ def build_full_excel(df: pd.DataFrame, tarifa_map: dict = None) -> bytes:
         ws_f.set_column(0,0,2); ws_f.set_column(1,1,12)
         for i in range(2,6): ws_f.set_column(i,i,11)
 
-        # Tabla DOW horizontal — layout según imagen:
-        # Fila 2 (row idx 2): solo celda "Día" como encabezado — las demás en blanco
-        # Fila 3 (row idx 3): "Pedidos" + valores numéricos con días como encabezados col
-        # Encabezado de columna (row 2, col+1): nombre del día (en azul)
-        # Fila "Pedidos" (row 3, col+1): valor numérico
+        # ── Tabla DOW por Cliente (reemplaza la tabla DOW horizontal) ──────
+        # Columnas: Cliente | Lunes | Martes | Miércoles | Jueves | Viernes | Sábado | Domingo
+        # Una fila por cliente, vinculada al gráfico multi-línea.
         DOW_START_COL = 7   # col H
-        dow_days = g_dow["Dia"].tolist()
-        dow_vals = g_dow["Total"].tolist()
-        n_dow    = len(dow_days)
+        _days_es = ["Lunes","Martes","Miércoles","Jueves","Viernes","Sábado","Domingo"]
+        dow_by_cli, _dias_es = _agg_dow_by_client(df)
+        cli_list_dow = list(dow_by_cli.keys())
+        n_cli_dow    = len(cli_list_dow)
 
-        # Fila 2: solo celda DOW_START_COL con "Día", las demás en blanco
-        ws_f.write(2, DOW_START_COL, "Día", fmts["H"])
-        for di in range(n_dow):
-            ws_f.write(2, DOW_START_COL + 1 + di, dow_days[di], fmts["H"])
+        _dow_str_fmt = wb.add_format({"font_name":"Calibri","font_size":11,"valign":"vcenter"})
+        _dow_num_fmt = wb.add_format({"font_name":"Calibri","font_size":11,
+                                       "num_format":"#,##0","align":"right","valign":"vcenter"})
+        _dow_tbl_cols = [{"header":"Cliente","header_format":fmts["H"],"format":_dow_str_fmt}]
+        for _d in _days_es:
+            _dow_tbl_cols.append({"header":_d,"header_format":fmts["H"],"format":_dow_num_fmt})
 
-        # Fila 3: "Pedidos" + valores
-        ws_f.write(3, DOW_START_COL, "Pedidos", fmts["H"])
-        ws_f.set_column(DOW_START_COL, DOW_START_COL, 9)
-        for di, val in enumerate(dow_vals):
-            col_i = DOW_START_COL + 1 + di
-            ws_f.write_number(3, col_i, int(val), fmts["N"])
-            ws_f.set_column(col_i, col_i, 10)
+        _dow_tbl_data = [[cli] + dow_by_cli[cli] for cli in cli_list_dow]
+
+        if n_cli_dow > 0:
+            ws_f.add_table(2, DOW_START_COL, 2 + n_cli_dow, DOW_START_COL + 7, {
+                "name":"TablaDOWCliente","style":"Table Style Medium 2",
+                "autofilter":False,"banded_rows":True,"first_column":False,
+                "columns":_dow_tbl_cols,"data":_dow_tbl_data,
+            })
+        ws_f.set_column(DOW_START_COL, DOW_START_COL, 22)
+        for _di in range(7):
+            ws_f.set_column(DOW_START_COL+1+_di, DOW_START_COL+1+_di, 10)
 
         # Rangos para gráfico 1 (por fecha)
         ci_ff_xl = 1   # col B (Fecha)
@@ -1482,21 +1520,33 @@ def build_full_excel(df: pd.DataFrame, tarifa_map: dict = None) -> bytes:
         ch_f1.set_size({"width":580,"height":280})
         ws_f.insert_chart(chart_row_f, 1, ch_f1)
 
-        # Gráfico 2: DOW — categorías en fila 2 (0-indexed), valores en fila 3 (0-indexed)
-        # DOW_START_COL+1 a DOW_START_COL+n_dow son los datos
-        DOW_DATA_START = DOW_START_COL + 1
-        DOW_DATA_END   = DOW_START_COL + n_dow
-        ch_f2 = _cs(wb, wb.add_chart({"type":"line"}))
-        ch_f2.set_title({"name":"Pedidos por Día de Semana",**_tf()})
-        ch_f2.set_x_axis(_af("Día"))
-        ch_f2.set_y_axis(_af("Pedidos"))
-        ch_f2.add_series({"name":"Pedidos",
-                           "categories":["Fechas", 2, DOW_DATA_START, 2, DOW_DATA_END],
-                           "values":    ["Fechas", 3, DOW_DATA_START, 3, DOW_DATA_END],
-                           "line":{"color":CG,"width":2},
-                           "marker":{"type":"circle","size":5,"fill":{"color":CG},"border":{"none":True}},
-                           "data_labels":{"value":True,"font":{"name":"Arial","size":8,"bold":True}}})
-        ch_f2.set_size({"width":460,"height":280})
+        # Gráfico 2: Pedidos por Cliente por Día de la Semana — multi-línea
+        # Una serie por cliente; categorías = encabezados de días en la tabla DOW
+        _pal_dow = ["#1E6BB5","#10B981","#F59E0B","#8B5CF6","#EF4444",
+                    "#4A9FE0","#06B6D4","#F97316","#84CC16","#EC4899"]
+        ch_f2 = wb.add_chart({"type":"line"})
+        ch_f2.set_style(10)
+        ch_f2.set_chartarea({"border":{"none":True},"fill":{"color":"#FFFFFF"}})
+        ch_f2.set_plotarea({"border":{"color":"#E2E8F0","width":0.75},"fill":{"color":"#FFFFFF"}})
+        ch_f2.set_title({"name":"Pedidos por Cliente · Día de la Semana",**_tf()})
+        ch_f2.set_x_axis({"name":"","major_gridlines":{"visible":True,"line":{"color":"#E8EDF2"}},
+                           "num_font":{"size":9}})
+        ch_f2.set_y_axis({"name":"","major_gridlines":{"visible":True,"line":{"color":"#E8EDF2"}},
+                           "num_font":{"size":9}})
+        ch_f2.set_legend({"position":"bottom","font":{"name":"Arial","size":9},"border":{"none":True}})
+        for _si, _cli in enumerate(cli_list_dow):
+            _ri = 3 + _si          # fila 0-indexed de datos del cliente en la hoja
+            _col = _pal_dow[_si % len(_pal_dow)]
+            ch_f2.add_series({
+                "name":       ["Fechas", _ri, DOW_START_COL],
+                "categories": ["Fechas", 2, DOW_START_COL+1, 2, DOW_START_COL+7],
+                "values":     ["Fechas", _ri, DOW_START_COL+1, _ri, DOW_START_COL+7],
+                "line":       {"color":_col,"width":2},
+                "marker":     {"type":"circle","size":5,
+                               "fill":{"color":_col},"border":{"none":True}},
+                "data_labels":{"value":True,"font":{"name":"Arial","size":8,"bold":True}},
+            })
+        ch_f2.set_size({"width":540,"height":300})
         ws_f.insert_chart(chart_row_f, 11, ch_f2)
 
         # ══════════════════════════════════════════════════════════════
@@ -2493,8 +2543,10 @@ new MutationObserver(function(muts) {{
         # Todas las filas muestran: cliente + tarifa (pequeño) + ✕ (solo ri>0).
         # El campo tarifa se muestra siempre al lado del cliente.
         df_tmp        = st.session_state.get("df", pd.DataFrame())
-        clientes_list = (sorted(df_tmp[COL_CLIENTE].dropna().unique().tolist())
-                         if COL_CLIENTE in df_tmp.columns else [])
+        clientes_list = (
+            sorted([c for c in df_tmp[COL_CLIENTE].dropna().unique().tolist()
+                    if str(c).strip()])   # excluir blancos y vacíos
+            if COL_CLIENTE in df_tmp.columns else [])
 
         if "tarifa_rows" not in st.session_state:
             st.session_state["tarifa_rows"] = [{"clientes": [], "tarifa": None}]
