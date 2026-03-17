@@ -610,6 +610,32 @@ def _agg_dow(df):
     grp["Total"] = grp["Total"].astype(int)
     return grp[["Dia","Total"]]
 
+def _agg_dow_by_client(df):
+    """Pedidos por día de la semana desglosado por cliente (top 8)."""
+    d    = df.copy()
+    fcol = get_fecha_col(d)
+    dow_map = {0:"Lunes",1:"Martes",2:"Miércoles",3:"Jueves",4:"Viernes",5:"Sábado",6:"Domingo"}
+    all_days = pd.DataFrame({"_dow": range(7),
+                              "Dia":  [dow_map[i] for i in range(7)]})
+    if fcol is None or COL_CLIENTE not in d.columns:
+        return pd.DataFrame(), []
+    d["_dt"]  = pd.to_datetime(d[fcol], dayfirst=True, errors="coerce")
+    d["_dow"] = d["_dt"].dt.dayofweek
+    d = d.dropna(subset=["_dow"])
+    d["_dow"] = d["_dow"].astype(int)
+    # Limitar a top 8 clientes por volumen total
+    top8 = (d.groupby(COL_CLIENTE)[COL_PIEZA].count()
+              .sort_values(ascending=False).head(8).index.tolist())
+    result = {}
+    for cli in top8:
+        g = (d[d[COL_CLIENTE] == cli]
+               .groupby("_dow").agg(_t=(COL_PIEZA,"count")).reset_index())
+        g = all_days.merge(g[["_dow","_t"]], on="_dow", how="left").fillna(0)
+        g["_t"] = g["_t"].astype(int)
+        result[cli] = g["_t"].tolist()   # lista de 7 valores (Lun→Dom)
+    dias = all_days["Dia"].tolist()
+    return result, dias   # {cliente: [7 ints]}, [7 nombres días]
+
 def _agg_estado(df):
     d = df.copy()
     d["_b"] = pd.to_numeric(safe(d,COL_BULTO), errors="coerce").fillna(0)
@@ -1748,6 +1774,40 @@ def tab_fecha(df: pd.DataFrame):
         fig2.update_layout(hovermode="x unified", showlegend=False)
         fig2.update_xaxes(title_text=""); fig2.update_yaxes(title_text="")
         theme(fig2, h=320); pc(fig2); cc()
+
+        # ── Gráfico: Pedidos por Cliente por Día de la Semana ─────────
+        dow_data, dias = _agg_dow_by_client(df)
+        if dow_data:
+            co("Pedidos por Cliente · Día de la Semana")
+            fig3 = go.Figure()
+            for i, (cli, vals) in enumerate(dow_data.items()):
+                color = PAL[i % len(PAL)]
+                r, g_hex, b_hex = (int(color[1:3],16),
+                                   int(color[3:5],16),
+                                   int(color[5:7],16))
+                fig3.add_trace(go.Scatter(
+                    x=dias, y=vals,
+                    name=cli,
+                    mode="lines+markers+text",
+                    line=dict(color=color, width=2.2),
+                    marker=dict(size=8, color=color,
+                                line=dict(color="#fff", width=1.5)),
+                    text=vals, textposition="top center",
+                    textfont=dict(size=9, color=color),
+                    hovertemplate=f"<b>{cli}</b><br>%{{x}}: <b>%{{y:,}}</b><extra></extra>",
+                    fill="tozeroy",
+                    fillcolor=f"rgba({r},{g_hex},{b_hex},0.06)",
+                ))
+            fig3.update_layout(
+                hovermode="x unified",
+                showlegend=True,
+                legend=dict(orientation="h", yanchor="bottom", y=-0.28,
+                            xanchor="center", x=0.5,
+                            font=dict(size=11), bgcolor="rgba(0,0,0,0)"),
+            )
+            fig3.update_xaxes(title_text="")
+            fig3.update_yaxes(title_text="")
+            theme(fig3, h=360); pc(fig3); cc()
 
     with st.expander("TABLA DE DATOS", expanded=False):
         co("Tabla de Actividad Diaria")
