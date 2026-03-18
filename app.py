@@ -968,8 +968,8 @@ def build_full_excel(df: pd.DataFrame, tarifa_map: dict = None) -> bytes:
     subtit_fmt = wb.add_format({"bold":True,"font_name":"Calibri","font_size":13,
                                  "font_color":CB,"bg_color":"#FFFFFF","border":0})
     ws_d.write(3, 1, "Resumen Ejecutivo", subtit_fmt)
-    ws_d.set_column(1, 1, 28)
-    ws_d.set_column(2, 2, 14)
+    ws_d.set_column(1, 1, 22)
+    ws_d.set_column(2, 2, 10)
 
     total_ped = len(df)
     n_ent_g   = int(is_ent(safe(df,COL_ESTADO)).sum())
@@ -1039,7 +1039,7 @@ def build_full_excel(df: pd.DataFrame, tarifa_map: dict = None) -> bytes:
     DT_SRC_IDX   = [1, 2, 9, 31, 8, 6, 17, 19, 18, 16, 21, 23, 22, 45, None]
     # hi=7 LOC ORIGEN y hi=11 LOC DESTINO -> ancho 8; hi=13,14 misma anchura TARIFA
     DT_WIDTHS    = [8.43, 12.30, 8, 7.29, 10.30, 11.30, 11, 8, 7.86,
-                    14.7, 10.7, 8, 7.86, 11.57, 8.57]
+                    14.7, 10.7, 8, 7.86, 11.57, 11.5]
     DT_INT_COLS   = {0, 2, 8, 12}
     DT_ARS_COL    = 14       # TARIFA CLIENTE
     DT_VALDEC_COL = 13       # VALOR DECLARADO
