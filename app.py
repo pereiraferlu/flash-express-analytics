@@ -1129,10 +1129,10 @@ def build_full_excel(df: pd.DataFrame, tarifa_map: dict = None) -> bytes:
             elif hi == DT_ARS_COL:
                 cli_val = ""
                 loc_val = ""
-                if DT_SRC_IDX[5] is not None and DT_SRC_IDX[5] < ncols_df:
-                    cli_val = str(df_export.iloc[ri].iloc[DT_SRC_IDX[5]]).strip()
-                if DT_SRC_IDX[11] is not None and DT_SRC_IDX[11] < ncols_df:
-                    loc_val = str(df_export.iloc[ri].iloc[DT_SRC_IDX[11]]).strip()
+                if COL_CLIENTE in df_export.columns:
+                    cli_val = str(df_export.iloc[ri][COL_CLIENTE]).strip()
+                if COL_LOC in df_export.columns:
+                    loc_val = str(df_export.iloc[ri][COL_LOC]).strip()
                 
                 tarifa_val = 0
                 if cli_val in tarifa_map:
@@ -2617,7 +2617,29 @@ def main():
                 
         df_tar = pd.DataFrame(flat_data) if flat_data else pd.DataFrame(columns=["Cliente", "Localidad", "Tarifa"])
         
-        edited = st.data_editor(df_tar, num_rows="dynamic", use_container_width=True)
+        # Obtener listas únicas combinando lo guardado en JSON y lo cargado
+        saved_c = list(t_map.keys())
+        saved_l = [loc for d in t_map.values() if isinstance(d, dict) for loc in d.keys()]
+        df_tmp = st.session_state.get("df")
+        curr_c, curr_l = [], []
+        if df_tmp is not None:
+            if "Cliente" in df_tmp.columns:
+                curr_c = [str(x) for x in df_tmp["Cliente"].dropna().unique() if str(x).strip()]
+            if "Localidad Destino" in df_tmp.columns:
+                curr_l = [str(x) for x in df_tmp["Localidad Destino"].dropna().unique() if str(x).strip()]
+                
+        list_c = sorted(list(set(saved_c + curr_c)))
+        list_l = sorted(list(set(saved_l + curr_l)))
+        if "DEFAULT" not in list_l:
+            list_l.insert(0, "DEFAULT")
+            
+        column_config = {
+            "Cliente": st.column_config.SelectboxColumn("Cliente", options=list_c, required=True),
+            "Localidad": st.column_config.SelectboxColumn("Localidad", options=list_l, required=True),
+            "Tarifa": st.column_config.NumberColumn("Tarifa", min_value=0, step=1, required=True)
+        }
+        
+        edited = st.data_editor(df_tar, num_rows="dynamic", use_container_width=True, column_config=column_config)
         
         if st.button("Guardar Tarifas", type="primary"):
             new_map = {}
