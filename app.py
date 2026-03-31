@@ -706,18 +706,29 @@ def _agg_zonas(df):
     return g.sort_values("Total",ascending=False).reset_index(drop=True).rename(columns={"_z":"Zona"})
 
 def _agg_tarifa(df, tarifa_map: dict):
-    """Calcula tarifa total por cliente: solo piezas entregadas × tarifa unitaria."""
     if not tarifa_map:
-        return pd.DataFrame(columns=["Cliente","Entregados","Tarifa Unitaria","Total a Cobrar"])
+        return pd.DataFrame(columns=["Cliente","Entregados","Total a Cobrar"])
     d = df.copy()
     d["_e"]   = is_ent(safe(d, COL_ESTADO)).astype(int)
-    d["_cli"] = safe(d, COL_CLIENTE)
-    g = (d[d["_cli"].isin(tarifa_map.keys())]
-           .groupby("_cli", as_index=False)
-           .agg(Entregados=("_e","sum")))
-    g = g.rename(columns={"_cli":"Cliente"})
-    g["Tarifa Unitaria"] = g["Cliente"].map(tarifa_map)
-    g["Total a Cobrar"]  = g["Entregados"] * g["Tarifa Unitaria"]
+    d["_cli"] = safe(d, COL_CLIENTE).astype(str).str.strip()
+    d["_loc"] = safe(d, COL_LOC).astype(str).str.strip()
+    
+    def get_tar(row):
+        cli = row["_cli"]
+        loc = row["_loc"]
+        if cli in tarifa_map:
+            cdata = tarifa_map[cli]
+            if isinstance(cdata, dict):
+                return cdata.get(loc, cdata.get("DEFAULT", 0))
+            return cdata
+        return 0
+
+    d["_tar_u"]  = d.apply(get_tar, axis=1)
+    d["_cobro"]  = d["_e"] * d["_tar_u"]
+    g = d[d["_cli"].isin(tarifa_map.keys())].groupby("_cli", as_index=False).agg(
+        Entregados=("_e", "sum"),
+        Total_Cobrar=("_cobro", "sum")
+    ).rename(columns={"_cli":"Cliente", "Total_Cobrar":"Total a Cobrar"})
     return g.sort_values("Total a Cobrar", ascending=False).reset_index(drop=True)
 
 
@@ -1117,9 +1128,20 @@ def build_full_excel(df: pd.DataFrame, tarifa_map: dict = None) -> bytes:
                     row_out.append("")
             elif hi == DT_ARS_COL:
                 cli_val = ""
+                loc_val = ""
                 if DT_SRC_IDX[5] is not None and DT_SRC_IDX[5] < ncols_df:
-                    cli_val = str(df_export.iloc[ri].iloc[DT_SRC_IDX[5]])
-                tarifa_val = tarifa_map.get(cli_val, 0)
+                    cli_val = str(df_export.iloc[ri].iloc[DT_SRC_IDX[5]]).strip()
+                if DT_SRC_IDX[11] is not None and DT_SRC_IDX[11] < ncols_df:
+                    loc_val = str(df_export.iloc[ri].iloc[DT_SRC_IDX[11]]).strip()
+                
+                tarifa_val = 0
+                if cli_val in tarifa_map:
+                    cdata = tarifa_map[cli_val]
+                    if isinstance(cdata, dict):
+                        tarifa_val = cdata.get(loc_val, cdata.get("DEFAULT", 0))
+                    else:
+                        tarifa_val = cdata
+                        
                 estado_val = safe(df_export, COL_ESTADO).iloc[ri]
                 if tarifa_val and is_ent(pd.Series([estado_val])).any():
                     row_out.append(tarifa_val)
@@ -1133,7 +1155,7 @@ def build_full_excel(df: pd.DataFrame, tarifa_map: dict = None) -> bytes:
                     raw_v = row_d.iloc[src_idx]
                 try:
                     dt_v = pd.to_datetime(raw_v, dayfirst=True, errors="coerce")
-                    row_out.append(dt_v.strftime("%d-%b") if not pd.isna(dt_v) else str(raw_v))
+                    row_out.append(dt_v.strftime("%d/%m/%y") if not pd.isna(dt_v) else str(raw_v))
                 except:
                     row_out.append(str(raw_v))
             elif src_idx is not None and src_idx < ncols_df:
@@ -2526,160 +2548,95 @@ new MutationObserver(function(muts) {{
 </div>
 """, unsafe_allow_html=True)
 
-        # ─── SECCIÓN TARIFA ──────────────────────────────────────────────────
-        st.markdown("""
-<div style="border-top:1px solid #E8EDF3;padding-top:12px;margin-bottom:8px">
-  <div style="font-size:11px;font-weight:700;text-transform:uppercase;
-              letter-spacing:1px;color:#64748B;margin-bottom:2px">
-      Configuración de tarifa por cliente
-  </div>
-  <div style="font-size:11px;color:#94A3B8;margin-bottom:8px">
-      Opcional. Si no se configura, la columna Tarifa Cliente quedará en blanco.
-  </div>
-</div>
-""", unsafe_allow_html=True)
-
-        # ─── CONTROLES DE TARIFA ─────────────────────────────────────────────
-        # Todas las filas muestran: cliente + tarifa (pequeño) + ✕ (solo ri>0).
-        # El campo tarifa se muestra siempre al lado del cliente.
-        df_tmp        = st.session_state.get("df", pd.DataFrame())
-        clientes_list = (
-            sorted([c for c in df_tmp[COL_CLIENTE].dropna().unique().tolist()
-                    if str(c).strip()])   # excluir blancos y vacíos
-            if COL_CLIENTE in df_tmp.columns else [])
-
-        if "tarifa_rows" not in st.session_state:
-            st.session_state["tarifa_rows"] = [{"clientes": [], "tarifa": None}]
-
-        rows_to_delete = []
-        for ri, row in enumerate(st.session_state["tarifa_rows"]):
-            used = set()
-            for j, r2 in enumerate(st.session_state["tarifa_rows"]):
-                if j != ri: used.update(r2.get("clientes", []))
-            available = [c for c in clientes_list if c not in used]
-
-            # Label solo en la primera fila; las demás sin etiqueta visible
-            lbl_cli = "Cliente(s)" if ri == 0 else " "
-            lbl_tar = "Tarifa $"  if ri == 0 else " "
-            lbl_vis = "visible"   if ri == 0 else "hidden"
-
-            if ri == 0:
-                # Fila 0: cliente + tarifa (sin ✕) — mismas proporciones
-                col_cli, col_tar = st.columns([3, 1.2])
-                with col_cli:
-                    selected = st.multiselect(
-                        lbl_cli,
-                        options=available,
-                        default=[c for c in row.get("clientes", []) if c in available],
-                        key="tar_cli_0",
-                        placeholder="Seleccionar cliente(s)...",
-                        label_visibility=lbl_vis,
-                    )
-                    st.session_state["tarifa_rows"][0]["clientes"] = selected
-
-                with col_tar:
-                    _cur_tar  = row.get("tarifa")
-                    _disp_tar = (f"{int(_cur_tar):,}" if isinstance(_cur_tar, (int, float))
-                                 and _cur_tar else "")
-                    tarifa_str = st.text_input(
-                        lbl_tar,
-                        value=_disp_tar,
-                        placeholder="0",
-                        key="tar_val_0",
-                        label_visibility=lbl_vis,
-                    )
-                    try:
-                        _parsed = (int(tarifa_str.replace(",", "").replace(".", "").strip())
-                                   if tarifa_str.strip() else None)
-                    except ValueError:
-                        _parsed = None
-                    st.session_state["tarifa_rows"][0]["tarifa"] = _parsed
-
-            else:
-                # Filas adicionales: cliente + tarifa + ✕
-                col_cli, col_tar, col_x = st.columns([3, 1.2, 0.3])
-                with col_cli:
-                    selected = st.multiselect(
-                        " ",
-                        options=available,
-                        default=[c for c in row.get("clientes", []) if c in available],
-                        key=f"tar_cli_{ri}",
-                        placeholder="Seleccionar cliente(s)...",
-                        label_visibility="hidden",
-                    )
-                    st.session_state["tarifa_rows"][ri]["clientes"] = selected
-
-                with col_tar:
-                    _cur_tar  = row.get("tarifa")
-                    _disp_tar = (f"{int(_cur_tar):,}" if isinstance(_cur_tar, (int, float))
-                                 and _cur_tar else "")
-                    tarifa_str = st.text_input(
-                        " ",
-                        value=_disp_tar,
-                        placeholder="0",
-                        key=f"tar_val_{ri}",
-                        label_visibility="hidden",
-                    )
-                    try:
-                        _parsed = (int(tarifa_str.replace(",", "").replace(".", "").strip())
-                                   if tarifa_str.strip() else None)
-                    except ValueError:
-                        _parsed = None
-                    st.session_state["tarifa_rows"][ri]["tarifa"] = _parsed
-
-                with col_x:
-                    st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
-                    if st.button("✕", key=f"tar_del_{ri}", use_container_width=True):
-                        rows_to_delete.append(ri)
-
-        for ri in reversed(rows_to_delete):
-            st.session_state["tarifa_rows"].pop(ri)
-            st.rerun()
-
-        # Botón Agregar cliente — pegado a la fila de cliente, sin spacer extra
-        if st.button("+ Agregar cliente", use_container_width=True, key="tar_add"):
-            st.session_state["tarifa_rows"].append({"clientes": [], "tarifa": None})
-            st.rerun()
-
         # ─── SEPARADOR + TEXTO + BOTONES ─────────────────────────────────────
         st.markdown("""
 <div style="border-top:1px solid #E8EDF3;padding-top:14px;margin-top:10px;margin-bottom:12px">
   <div style="font-size:13px;font-weight:600;color:#374151;text-align:center;line-height:1.4">
-      Confirmá para generar el análisis completo o Cancelá para volver al inicio.
+      Confirmá para procesar el archivo o Cancelá para volver al inicio.
   </div>
 </div>
 """, unsafe_allow_html=True)
 
-        # AMBOS type="primary" → mismo HTML. JS colorea por texto del botón.
-        # 2 columnas iguales, sin spacer (el spacer creaba un "cuadro" extra).
         col_canc, col_cont = st.columns(2)
-
         with col_canc:
-            if st.button("Cancelar", use_container_width=True,
-                         type="secondary", key="btn_cancelar"):
-                for k in ["df", "fname", "confirmed", "stats", "tarifa_rows", "tarifa_map"]:
+            if st.button("Cancelar", use_container_width=True, type="secondary", key="btn_cancelar"):
+                for k in ["df", "fname", "confirmed", "stats", "tarifa_rows"]:
                     st.session_state.pop(k, None)
                 st.rerun()
 
         with col_cont:
-            if st.button("Continuar", use_container_width=True,
-                         type="primary", key="btn_continuar"):
-                tarifa_map = {}
-                for row in st.session_state.get("tarifa_rows", []):
-                    t = row.get("tarifa") or 0
-                    if row.get("clientes") and t > 0:
-                        for cli in row["clientes"]:
-                            tarifa_map[cli] = int(t)
-                st.session_state["tarifa_map"] = tarifa_map
-                st.session_state["confirmed"]  = True
+            if st.button("Continuar", use_container_width=True, type="primary", key="btn_continuar"):
+                st.session_state["confirmed"] = True
                 st.rerun()
 
+
+import json
+import os
+
+TARIFAS_FILE = "tarifas.json"
+
+def load_tarifas():
+    if os.path.exists(TARIFAS_FILE):
+        try:
+            with open(TARIFAS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            pass
+    return {}
+
+def save_tarifas(data):
+    try:
+        with open(TARIFAS_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except:
+        pass
 
 def main():
     if "confirmed" not in st.session_state:
         st.session_state["confirmed"] = False
     if "tarifa_map" not in st.session_state:
-        st.session_state["tarifa_map"] = {}
+        st.session_state["tarifa_map"] = load_tarifas()
+
+    with st.sidebar:
+        st.markdown("### ⚙️ Ajustes")
+        if st.button("Configurar Tarifas", use_container_width=True):
+            st.session_state["show_settings"] = not st.session_state.get("show_settings", False)
+
+    if st.session_state.get("show_settings", False):
+        st.title("⚙️ Configuración de Tarifas")
+        st.markdown("Configurá las tarifas por **Cliente** y **Localidad**. Usá **DEFAULT** en localidad si querés aplicar la tarifa a todas las demás zonas del cliente.")
+        
+        t_map = st.session_state.get("tarifa_map", {})
+        flat_data = []
+        for cli, d in t_map.items():
+            if isinstance(d, dict):
+                for loc, val in d.items():
+                    flat_data.append({"Cliente": cli, "Localidad": loc, "Tarifa": val})
+            else:
+                flat_data.append({"Cliente": cli, "Localidad": "DEFAULT", "Tarifa": d})
+                
+        df_tar = pd.DataFrame(flat_data) if flat_data else pd.DataFrame(columns=["Cliente", "Localidad", "Tarifa"])
+        
+        edited = st.data_editor(df_tar, num_rows="dynamic", use_container_width=True)
+        
+        if st.button("Guardar Tarifas", type="primary"):
+            new_map = {}
+            for _, r in edited.iterrows():
+                c = str(r.get("Cliente", "")).strip()
+                l = str(r.get("Localidad", "")).strip()
+                t = r.get("Tarifa", 0)
+                if c and pd.notna(t) and c.upper() != "NAN":
+                    if not l or l.upper() == "NAN": l = "DEFAULT"
+                    if c not in new_map: new_map[c] = {}
+                    new_map[c][l] = int(t)
+            st.session_state["tarifa_map"] = new_map
+            save_tarifas(new_map)
+            st.success("Tarifas guardadas exitosamente en tarifas.json.")
+        
+        if st.button("Volver al Inicio"):
+            st.session_state["show_settings"] = False
+            st.rerun()
+        return
 
     if st.session_state.get("confirmed") and "df" in st.session_state:
         render_dashboard(st.session_state["df"], st.session_state["fname"])
