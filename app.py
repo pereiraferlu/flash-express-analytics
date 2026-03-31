@@ -830,6 +830,10 @@ def _fmts(wb):
                                "border":1,"border_color":"#D0DCE8","align":"right","valign":"vcenter"}),
         # Encabezado BG blanco (celda vacía con borde)
         "HBG": wb.add_format({"bg_color":"#FFFFFF","border":0}),
+        # Formatos para tablas Datos Generales (sin bg_color para banding)
+        "T_FEC": wb.add_format({"font_name":F,"font_size":S,"num_format":"dd/mm/yy","valign":"vcenter","align":"center"}),
+        "T_MON": wb.add_format({"font_name":F,"font_size":S,"num_format":"$ #,##0","valign":"vcenter","align":"right"}),
+        "T_INT": wb.add_format({"font_name":F,"font_size":S,"num_format":"0","valign":"vcenter","align":"right"}),
     }
 
 def _setup_ws(ws, fmts, zoom=90):
@@ -1090,17 +1094,18 @@ def build_full_excel(df: pd.DataFrame, tarifa_map: dict = None) -> bytes:
     last_data_row = 4 + total_ped + 1  # = fila de totales; datos en filas 5..4+total_ped
 
     # Columnas: total_function declaradas para que add_table calcule sola
-    table_columns = [
-        {
-            "header"         : hdr,
-            "total_function" : (
-                "count" if hi == 0 else          # PIEZA → count
-                "sum"   if hi == 13 else          # TARIFA CLIENTE → sum
-                None
-            ),
-        }
-        for hi, hdr in enumerate(DT_HDRS_CLEAN)
-    ]
+    table_columns = []
+    for hi, hdr in enumerate(DT_HDRS_CLEAN):
+        col_def = {"header": hdr}
+        if hi == 0: col_def["total_function"] = "count"
+        elif hi == 13: col_def["total_function"] = "sum"
+        
+        # Aplicar formatos de columna
+        if hi == 3:                   col_def["format"] = fmts["T_FEC"]
+        elif hi in [13, 14]:          col_def["format"] = fmts["T_MON"]
+        elif hi in DT_INT_COLS:       col_def["format"] = fmts["T_INT"]
+        
+        table_columns.append(col_def)
 
     # ── Pre-computar array de datos para pasarlo a add_table ─────────────
     # Pasar data= a add_table garantiza que xlsxwriter controla todo el
@@ -1155,7 +1160,10 @@ def build_full_excel(df: pd.DataFrame, tarifa_map: dict = None) -> bytes:
                     raw_v = row_d.iloc[src_idx]
                 try:
                     dt_v = pd.to_datetime(raw_v, dayfirst=True, errors="coerce")
-                    row_out.append(dt_v.strftime("%d/%m/%y") if not pd.isna(dt_v) else str(raw_v))
+                    if not pd.isna(dt_v):
+                        row_out.append(dt_v.to_pydatetime())
+                    else:
+                        row_out.append(str(raw_v))
                 except:
                     row_out.append(str(raw_v))
             elif src_idx is not None and src_idx < ncols_df:
