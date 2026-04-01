@@ -1053,7 +1053,7 @@ def build_full_excel(df: pd.DataFrame, tarifa_map: dict = None) -> bytes:
     # AT = columna 46 fuente (1-based) -> idx 45 (0-based)
     DT_SRC_IDX   = [1, 2, 9, 31, 8, 6, 17, 19, 18, 16, 21, 23, 22, 45, None]
     # hi=7 LOC ORIGEN y hi=11 LOC DESTINO -> ancho 8; hi=13,14 misma anchura TARIFA
-    DT_WIDTHS    = [8.43, 12.30, 8, 7.29, 10.30, 11.30, 11, 8, 7.86,
+    DT_WIDTHS    = [8.43, 12.30, 8, 9.6, 10.30, 11.30, 11, 8, 7.86,
                     14.7, 10.7, 8, 7.86, 11.57, 11.5]
     DT_INT_COLS   = {0, 2, 8, 12}
     DT_ARS_COL    = 14       # TARIFA CLIENTE
