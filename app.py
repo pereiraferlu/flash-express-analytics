@@ -1067,9 +1067,14 @@ def build_full_excel(df: pd.DataFrame, tarifa_map: dict = None) -> bytes:
 
     ws_d.write(3, DT_START_COL, "Tabla de Datos", subtit_fmt)
 
-    # Configurar anchos
+    # Configurar anchos y formatos de columna base
     for hi, w in enumerate(DT_WIDTHS):
-        ws_d.set_column(DT_START_COL+hi, DT_START_COL+hi, w)
+        col_idx = DT_START_COL + hi
+        fmt = None
+        if hi == 3:                   fmt = fmts["T_FEC"]
+        elif hi in [13, 14]:          fmt = fmts["T_MON"]
+        elif hi in DT_INT_COLS:       fmt = fmts["T_INT"]
+        ws_d.set_column(col_idx, col_idx, w, fmt)
 
     fcol     = get_fecha_col(df)
     ncols_df = len(df.columns)
