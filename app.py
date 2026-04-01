@@ -1099,18 +1099,7 @@ def build_full_excel(df: pd.DataFrame, tarifa_map: dict = None) -> bytes:
     last_data_row = 4 + total_ped + 1  # = fila de totales; datos en filas 5..4+total_ped
 
     # Columnas: total_function declaradas para que add_table calcule sola
-    table_columns = []
-    for hi, hdr in enumerate(DT_HDRS_CLEAN):
-        col_def = {"header": hdr}
-        if hi == 0: col_def["total_function"] = "count"
-        elif hi == 13: col_def["total_function"] = "sum"
-        
-        # Aplicar formatos de columna
-        if hi == 3:                   col_def["format"] = fmts["T_FEC"]
-        elif hi in [13, 14]:          col_def["format"] = fmts["T_MON"]
-        elif hi in DT_INT_COLS:       col_def["format"] = fmts["T_INT"]
-        
-        table_columns.append(col_def)
+    # (Bloque de columnas eliminado por redundancia, se define abajo en table_columns_final)
 
     # ── Pre-computar array de datos para pasarlo a add_table ─────────────
     # Pasar data= a add_table garantiza que xlsxwriter controla todo el
@@ -1205,6 +1194,7 @@ def build_full_excel(df: pd.DataFrame, tarifa_map: dict = None) -> bytes:
     fmt_ars_col = wb.add_format({"num_format": "$ #,##0",  "font_name": F_TBL, "font_size": S_TBL, "valign": "vcenter"})
     # CP DESTINO (hi=12): int con alineación derecha para total_string "Total a Cobrar"
     fmt_cp_dest = wb.add_format({"num_format": "0",        "font_name": F_TBL, "font_size": S_TBL, "align": "right", "valign": "vcenter"})
+    fmt_date_col= wb.add_format({"num_format": "dd/mm/yy", "font_name": F_TBL, "font_size": S_TBL, "align": "center", "valign": "vcenter"})
 
     # header_format aplica color azul al encabezado vía XML de tabla.
     # NUNCA escribir celdas del rango de la tabla después de add_table.
@@ -1221,6 +1211,8 @@ def build_full_excel(df: pd.DataFrame, tarifa_map: dict = None) -> bytes:
         elif hi == 1:
             col_def["total_string"] = "Total Pedidos"
             col_def["format"] = fmt_id_col      # ID → centrado
+        elif hi == 3:
+            col_def["format"] = fmt_date_col    # FECHA → dd/mm/yy
         elif hi == 12:
             # CP DESTINO: fila totales vacía (ni suma ni texto)
             col_def["format"] = fmt_cp_dest     # int + align right
