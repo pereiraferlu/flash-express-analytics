@@ -165,6 +165,7 @@ COL_ESTADO  = "Estado"
 COL_DISTRIB = "Distribuidor"
 COL_LOC     = "Localidad Destino"
 COL_BULTO   = "Bulto"
+COL_SUCURSAL = "Sucursal"
 
 # Fecha: buscar en columna "Datos Varios" (col AF ~índice 31) o fallback a otras
 COL_FECHA_CANDIDATES = ["Datos Varios", "Fecha Ingreso", "Fecha", "fecha", "Date"]
@@ -233,6 +234,23 @@ def get_fecha_col(df):
     if len(df.columns) > 31:
         return df.columns[31]
     return None
+
+def get_tarifa_val(row, tarifa_map):
+    cli = str(row.get(COL_CLIENTE, "")).strip()
+    loc = str(row.get(COL_LOC, "")).strip()
+    suc = str(row.get(COL_SUCURSAL, "")).strip().upper()
+    
+    if cli.upper() == "FLASH TUCUMAN" or suc == "TRAFICO TUCUMAN":
+        return 0
+    if cli in tarifa_map:
+        cdata = tarifa_map[cli]
+        if isinstance(cdata, dict):
+            if loc in cdata: return cdata[loc]
+            if "DEFAULT" in cdata: return cdata["DEFAULT"]
+        else: return cdata
+    if cli.upper() == "TUS TECNOLOGIAS" and loc.upper() == "TAFI VIEJO":
+        return 3500
+    return 1500
 
 def _read_xls_biff8_native(raw: bytes) -> "pd.DataFrame":
     """Lee un archivo XLS BIFF8/OLE2 sin xlrd.
@@ -706,29 +724,14 @@ def _agg_zonas(df):
     return g.sort_values("Total",ascending=False).reset_index(drop=True).rename(columns={"_z":"Zona"})
 
 def _agg_tarifa(df, tarifa_map: dict):
-    if not tarifa_map:
-        return pd.DataFrame(columns=["Cliente","Entregados","Total a Cobrar"])
     d = df.copy()
-    d["_e"]   = is_ent(safe(d, COL_ESTADO)).astype(int)
-    d["_cli"] = safe(d, COL_CLIENTE).astype(str).str.strip()
-    d["_loc"] = safe(d, COL_LOC).astype(str).str.strip()
-    
-    def get_tar(row):
-        cli = row["_cli"]
-        loc = row["_loc"]
-        if cli in tarifa_map:
-            cdata = tarifa_map[cli]
-            if isinstance(cdata, dict):
-                return cdata.get(loc, cdata.get("DEFAULT", 0))
-            return cdata
-        return 0
-
-    d["_tar_u"]  = d.apply(get_tar, axis=1)
-    d["_cobro"]  = d["_e"] * d["_tar_u"]
-    g = d[d["_cli"].isin(tarifa_map.keys())].groupby("_cli", as_index=False).agg(
+    d["_e"] = is_ent(safe(d, COL_ESTADO)).astype(int)
+    d["_tar_u"] = d.apply(lambda r: get_tarifa_val(r, tarifa_map), axis=1)
+    d["_cobro"] = d["_e"] * d["_tar_u"]
+    g = d.groupby(COL_CLIENTE, as_index=False).agg(
         Entregados=("_e", "sum"),
         Total_Cobrar=("_cobro", "sum")
-    ).rename(columns={"_cli":"Cliente", "Total_Cobrar":"Total a Cobrar"})
+    ).rename(columns={COL_CLIENTE: "Cliente", "Total_Cobrar": "Total a Cobrar"})
     return g.sort_values("Total a Cobrar", ascending=False).reset_index(drop=True)
 
 
@@ -1126,22 +1129,8 @@ def build_full_excel(df: pd.DataFrame, tarifa_map: dict = None) -> bytes:
                 else:
                     row_out.append("")
             elif hi == DT_ARS_COL:
-                cli_val = ""
-                loc_val = ""
-                if COL_CLIENTE in df_export.columns:
-                    cli_val = str(df_export.iloc[ri][COL_CLIENTE]).strip()
-                if COL_LOC in df_export.columns:
-                    loc_val = str(df_export.iloc[ri][COL_LOC]).strip()
-                
-                tarifa_val = 0
-                if cli_val in tarifa_map:
-                    cdata = tarifa_map[cli_val]
-                    if isinstance(cdata, dict):
-                        tarifa_val = cdata.get(loc_val, cdata.get("DEFAULT", 0))
-                    else:
-                        tarifa_val = cdata
-                        
-                estado_val = safe(df_export, COL_ESTADO).iloc[ri]
+                tarifa_val = get_tarifa_val(row_d, tarifa_map)
+                estado_val = row_d[COL_ESTADO] if COL_ESTADO in row_d else ""
                 if tarifa_val and is_ent(pd.Series([estado_val])).any():
                     row_out.append(tarifa_val)
                 else:
@@ -2609,9 +2598,23 @@ def main():
 
     if st.session_state.get("show_settings", False):
         st.title("⚙️ Configuración de Tarifas")
-        st.markdown("Configurá las tarifas por **Cliente** y **Localidad**. Usá **DEFAULT** en localidad si querés aplicar la tarifa a todas las demás zonas del cliente.")
+        st.markdown("Configurá las tarifas por **Cliente** y **Localidad**. El sistema aplica automáticamente las reglas por defecto (1500 general, 3500 Tus Tecnologías en Tafí Viejo, 0 para Tráfico Tucumán/Flash Tucumán) a menos que definas un valor aquí.")
         
         t_map = st.session_state.get("tarifa_map", {})
+        df_tmp = st.session_state.get("df")
+        
+        # Sincronizar t_map con combinaciones del DF actual si existen
+        if df_tmp is not None:
+            cols = [COL_CLIENTE, COL_LOC]
+            if COL_SUCURSAL in df_tmp.columns: cols.append(COL_SUCURSAL)
+            pairs = df_tmp[cols].drop_duplicates()
+            for _, r in pairs.iterrows():
+                c = str(r[COL_CLIENTE]).strip()
+                l = str(r[COL_LOC]).strip()
+                if c not in t_map: t_map[c] = {}
+                if l not in t_map[c]:
+                    t_map[c][l] = get_tarifa_val(r, {}) # Pasar {} para obtener el default
+        
         flat_data = []
         for cli, d in t_map.items():
             if isinstance(d, dict):
@@ -2622,21 +2625,9 @@ def main():
                 
         df_tar = pd.DataFrame(flat_data) if flat_data else pd.DataFrame(columns=["Cliente", "Localidad", "Tarifa"])
         
-        # Obtener listas únicas combinando lo guardado en JSON y lo cargado
-        saved_c = list(t_map.keys())
-        saved_l = [loc for d in t_map.values() if isinstance(d, dict) for loc in d.keys()]
-        df_tmp = st.session_state.get("df")
-        curr_c, curr_l = [], []
-        if df_tmp is not None:
-            if "Cliente" in df_tmp.columns:
-                curr_c = [str(x) for x in df_tmp["Cliente"].dropna().unique() if str(x).strip()]
-            if "Localidad Destino" in df_tmp.columns:
-                curr_l = [str(x) for x in df_tmp["Localidad Destino"].dropna().unique() if str(x).strip()]
-                
-        list_c = sorted(list(set(saved_c + curr_c)))
-        list_l = sorted(list(set(saved_l + curr_l)))
-        if "DEFAULT" not in list_l:
-            list_l.insert(0, "DEFAULT")
+        list_c = sorted(df_tar["Cliente"].unique().tolist()) if not df_tar.empty else []
+        list_l = sorted(df_tar["Localidad"].unique().tolist()) if not df_tar.empty else []
+        if "DEFAULT" not in list_l: list_l.insert(0, "DEFAULT")
             
         column_config = {
             "Cliente": st.column_config.SelectboxColumn("Cliente", options=list_c, required=True),
@@ -2658,7 +2649,7 @@ def main():
                     new_map[c][l] = int(t)
             st.session_state["tarifa_map"] = new_map
             save_tarifas(new_map)
-            st.success("Tarifas guardadas exitosamente en tarifas.json.")
+            st.success("Tarifas guardadas exitosamente.")
         
         if st.button("Volver al Inicio"):
             st.session_state["show_settings"] = False
