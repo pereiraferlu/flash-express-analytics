@@ -260,6 +260,8 @@ def get_tarifa_val(row, tarifa_map):
             if "DEFAULT" in cdata: return cdata["DEFAULT"]
         else: return cdata
             
+    if cn == "BIO VET SRL":
+        return 3000
     if cn == "TUS TECNOLOGIAS" and ln == "TAFI VIEJO":
         return 3500
     return 1500
@@ -1060,18 +1062,18 @@ def build_full_excel(df: pd.DataFrame, tarifa_map: dict = None) -> bytes:
     DT_HEADERS  = ["PIEZA","ID","HDR","FECHA","DRIVER","CLIENTE",
                    "DOMICILIO\nORIGEN","LOCALIDAD\nORIGEN","CP\nORIGEN",
                    "DESTINATARIO","DOMICILIO\nDESTINO","LOCALIDAD\nDESTINO",
-                   "CP\nDESTINO","VALOR\nDECLARADO","TARIFA\nCLIENTE"]
+                   "CP\nDESTINO","VALOR\nDECLARADO","MONTO\nCOBRANZA","TARIFA\nCLIENTE"]
     DT_HDRS_CLEAN = ["PIEZA","ID","HDR","FECHA","DRIVER","CLIENTE",
                      "DOM ORIGEN","LOC ORIGEN","CP ORIGEN",
                      "DESTINATARIO","DOM DESTINO","LOC DESTINO",
-                     "CP DESTINO","VALOR DECLARADO","TARIFA CLIENTE"]
-    # AT = columna 46 fuente (1-based) -> idx 45 (0-based)
-    DT_SRC_IDX   = [1, 2, 9, 31, 8, 6, 17, 19, 18, 16, 21, 23, 22, 45, None]
-    # hi=7 LOC ORIGEN y hi=11 LOC DESTINO -> ancho 8; hi=13,14 misma anchura TARIFA
+                     "CP DESTINO","VALOR DECLARADO","MONTO COBRANZA","TARIFA CLIENTE"]
+    # AY = columna 51 fuente -> idx 50
+    DT_SRC_IDX   = [1, 2, 9, 31, 8, 6, 17, 19, 18, 16, 21, 23, 22, 45, 50, None]
     DT_WIDTHS    = [8.43, 12.30, 8, 9.6, 10.30, 11.30, 11, 8, 7.86,
-                    14.7, 10.7, 8, 7.86, 11.57, 11.5]
+                    14.7, 10.7, 8, 7.86, 11.57, 11.5, 11.5]
     DT_INT_COLS   = {0, 2, 8, 12}
-    DT_ARS_COL    = 14       # TARIFA CLIENTE
+    DT_ARS_COL    = 15       # TARIFA CLIENTE
+    DT_COB_COL    = 14       # MONTO COBRANZA
     DT_VALDEC_COL = 13       # VALOR DECLARADO
 
     DT_START_COL = 4
@@ -1125,28 +1127,23 @@ def build_full_excel(df: pd.DataFrame, tarifa_map: dict = None) -> bytes:
         row_d = df_export.iloc[ri]
         row_out = []
         for hi, src_idx in enumerate(DT_SRC_IDX):
-            if hi == DT_VALDEC_COL:
-                # VALOR DECLARADO: leer columna AT (idx 45) como entero sin decimales
-                if DT_SRC_IDX[hi] is not None and DT_SRC_IDX[hi] < ncols_df:
-                    raw_v = row_d.iloc[DT_SRC_IDX[hi]]
+            elif hi in [DT_VALDEC_COL, DT_COB_COL]:
+                # VALOR DECLARADO (idx 45) o MONTO COBRANZA (idx 50)
+                src_i = DT_SRC_IDX[hi]
+                if src_i is not None and src_i < ncols_df:
+                    raw_v = row_d.iloc[src_i]
                     try:
                         if isinstance(raw_v, (int, float)) and not pd.isna(raw_v):
-                            ival = int(raw_v)
-                            row_out.append(ival if ival != 0 else "")
+                            row_out.append(int(raw_v))
                         else:
-                            ival = int(float(str(raw_v).replace(",","").strip()))
-                            row_out.append(ival if ival != 0 else "")
+                            row_out.append(int(float(str(raw_v).replace(",","").strip())))
                     except:
-                        row_out.append("")
+                        row_out.append(0)
                 else:
-                    row_out.append("")
+                    row_out.append(0)
             elif hi == DT_ARS_COL:
                 tarifa_val = get_tarifa_val(row_d, tarifa_map)
-                estado_val = row_d[COL_ESTADO] if COL_ESTADO in row_d else ""
-                if tarifa_val and is_ent(pd.Series([estado_val])).any():
-                    row_out.append(tarifa_val)
-                else:
-                    row_out.append("")
+                row_out.append(tarifa_val if tarifa_val else 0)
             elif hi == 3:  # FECHA
                 raw_v = ""
                 if fcol and fcol in df_export.columns:
@@ -1193,6 +1190,7 @@ def build_full_excel(df: pd.DataFrame, tarifa_map: dict = None) -> bytes:
     fmt_int_col = wb.add_format({"num_format": "0",        "font_name": F_TBL, "font_size": S_TBL, "valign": "vcenter"})
     fmt_id_col  = wb.add_format({"num_format": "0",        "font_name": F_TBL, "font_size": S_TBL, "align": "center", "valign": "vcenter"})
     fmt_ars_col = wb.add_format({"num_format": "$ #,##0",  "font_name": F_TBL, "font_size": S_TBL, "valign": "vcenter"})
+    fmt_cob_col = wb.add_format({"num_format": "$ #,##0",  "font_name": F_TBL, "font_size": S_TBL, "bg_color": "#F0F7FF", "valign": "vcenter"})
     # CP DESTINO (hi=12): int con alineación derecha para total_string "Total a Cobrar"
     fmt_cp_dest = wb.add_format({"num_format": "0",        "font_name": F_TBL, "font_size": S_TBL, "align": "right", "valign": "vcenter"})
     fmt_date_col= wb.add_format({"num_format": "dd/mm/yy", "font_name": F_TBL, "font_size": S_TBL, "align": "center", "valign": "vcenter"})
@@ -1220,7 +1218,10 @@ def build_full_excel(df: pd.DataFrame, tarifa_map: dict = None) -> bytes:
         elif hi == DT_VALDEC_COL:               # 13: VALOR DECLARADO → datos $ #,##0; total = texto derecha
             col_def["total_string"] = "Total a Cobrar"
             col_def["format"] = fmt_ars_col
-        elif hi == DT_ARS_COL:                  # 14: TARIFA CLIENTE → $ #,##0
+        elif hi == DT_COB_COL:                  # 14: MONTO COBRANZA
+            col_def["total_function"] = "sum"
+            col_def["format"] = fmt_cob_col
+        elif hi == DT_ARS_COL:                  # 15: TARIFA CLIENTE → $ #,##0
             col_def["total_function"] = "sum"
             col_def["format"] = fmt_ars_col
 
