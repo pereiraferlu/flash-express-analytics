@@ -236,19 +236,31 @@ def get_fecha_col(df):
     return None
 
 def get_tarifa_val(row, tarifa_map):
-    cli = str(row.get(COL_CLIENTE, "")).strip()
-    loc = str(row.get(COL_LOC, "")).strip()
+    cli_raw = str(row.get(COL_CLIENTE, "")).strip()
+    loc_raw = str(row.get(COL_LOC, "")).strip()
     suc = str(row.get(COL_SUCURSAL, "")).strip().upper()
     
-    if cli.upper() == "FLASH TUCUMAN" or suc == "TRAFICO TUCUMAN":
+    # Normalización para comparaciones robustas
+    def _n(s):
+        import unicodedata
+        return "".join(c for c in unicodedata.normalize('NFD', str(s).upper().strip()) 
+                       if unicodedata.category(c) != 'Mn') if s else ""
+    
+    cn = _n(cli_raw)
+    ln = _n(loc_raw)
+    
+    if cn == "FLASH TUCUMAN" or suc == "TRAFICO TUCUMAN":
         return 0
-    if cli in tarifa_map:
-        cdata = tarifa_map[cli]
+        
+    # El mapa de usuario tiene prioridad si existe la entrada exacta
+    if cli_raw in tarifa_map:
+        cdata = tarifa_map[cli_raw]
         if isinstance(cdata, dict):
-            if loc in cdata: return cdata[loc]
+            if loc_raw in cdata: return cdata[loc_raw]
             if "DEFAULT" in cdata: return cdata["DEFAULT"]
         else: return cdata
-    if cli.upper() == "TUS TECNOLOGIAS" and loc.upper() == "TAFI VIEJO":
+            
+    if cn == "TUS TECNOLOGIAS" and ln == "TAFI VIEJO":
         return 3500
     return 1500
 
