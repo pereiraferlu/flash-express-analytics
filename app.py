@@ -1127,7 +1127,7 @@ def build_full_excel(df: pd.DataFrame, tarifa_map: dict = None) -> bytes:
         row_d = df_export.iloc[ri]
         row_out = []
         for hi, src_idx in enumerate(DT_SRC_IDX):
-            elif hi in [DT_VALDEC_COL, DT_COB_COL]:
+            if hi in [DT_VALDEC_COL, DT_COB_COL]:
                 # VALOR DECLARADO (idx 45) o MONTO COBRANZA (idx 50)
                 src_i = DT_SRC_IDX[hi]
                 if src_i is not None and src_i < ncols_df:
