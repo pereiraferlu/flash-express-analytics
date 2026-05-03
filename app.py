@@ -260,7 +260,7 @@ def get_tarifa_val(row, tarifa_map):
             if "DEFAULT" in cdata: return cdata["DEFAULT"]
         else: return cdata
             
-    if cn == "BIO VET SRL":
+    if "BIO VET" in cn:
         return 3000
     if cn == "TUS TECNOLOGIAS" and ln == "TAFI VIEJO":
         return 3500
@@ -856,6 +856,7 @@ def _fmts(wb):
 def _setup_ws(ws, fmts, zoom=90):
     """Configura hoja: fondo blanco, zoom 90%, sin freeze."""
     ws.set_zoom(zoom)
+    ws.hide_gridlines(2)
     for row_i in range(300):
         ws.set_row(row_i, None, fmts["BG"])
     ws.set_column(0, 40, None, fmts["BG"])
@@ -1070,7 +1071,7 @@ def build_full_excel(df: pd.DataFrame, tarifa_map: dict = None) -> bytes:
     # AY = columna 51 fuente -> idx 50
     DT_SRC_IDX   = [1, 2, 9, 31, 8, 6, 17, 19, 18, 16, 21, 23, 22, 45, 50, None]
     DT_WIDTHS    = [8.43, 12.30, 8, 9.6, 10.30, 11.30, 11, 8, 7.86,
-                    14.7, 10.7, 8, 7.86, 11.57, 11.5, 11.5]
+                    8, 10.7, 8, 7.86, 11.57, 11.5, 11.5]
     DT_INT_COLS   = {0, 2, 8, 12}
     DT_ARS_COL    = 15       # TARIFA CLIENTE
     DT_COB_COL    = 14       # MONTO COBRANZA
@@ -1190,7 +1191,7 @@ def build_full_excel(df: pd.DataFrame, tarifa_map: dict = None) -> bytes:
     fmt_int_col = wb.add_format({"num_format": "0",        "font_name": F_TBL, "font_size": S_TBL, "valign": "vcenter"})
     fmt_id_col  = wb.add_format({"num_format": "0",        "font_name": F_TBL, "font_size": S_TBL, "align": "center", "valign": "vcenter"})
     fmt_ars_col = wb.add_format({"num_format": "$ #,##0",  "font_name": F_TBL, "font_size": S_TBL, "valign": "vcenter"})
-    fmt_cob_col = wb.add_format({"num_format": "$ #,##0",  "font_name": F_TBL, "font_size": S_TBL, "bg_color": "#F0F7FF", "valign": "vcenter"})
+    fmt_cob_col = wb.add_format({"num_format": "$ #,##0",  "font_name": F_TBL, "font_size": S_TBL, "valign": "vcenter"})
     # CP DESTINO (hi=12): int con alineación derecha para total_string "Total a Cobrar"
     fmt_cp_dest = wb.add_format({"num_format": "0",        "font_name": F_TBL, "font_size": S_TBL, "align": "right", "valign": "vcenter"})
     fmt_date_col= wb.add_format({"num_format": "dd/mm/yy", "font_name": F_TBL, "font_size": S_TBL, "align": "center", "valign": "vcenter"})
