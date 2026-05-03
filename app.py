@@ -1216,8 +1216,8 @@ def build_full_excel(df: pd.DataFrame, tarifa_map: dict = None) -> bytes:
         elif hi == 12:
             # CP DESTINO: fila totales vacía (ni suma ni texto)
             col_def["format"] = fmt_cp_dest     # int + align right
-        elif hi == DT_VALDEC_COL:               # 13: VALOR DECLARADO → datos $ #,##0; total = texto derecha
-            col_def["total_string"] = "Total a Cobrar"
+        elif hi == DT_VALDEC_COL:               # 13: VALOR DECLARADO
+            col_def["total_function"] = "sum"
             col_def["format"] = fmt_ars_col
         elif hi == DT_COB_COL:                  # 14: MONTO COBRANZA
             col_def["total_function"] = "sum"
@@ -1249,12 +1249,7 @@ def build_full_excel(df: pd.DataFrame, tarifa_map: dict = None) -> bytes:
         "align": "left", "valign": "vcenter", "bold": True,
     })
     ws_d.write(last_data_row, DT_START_COL + 1, "Total Pedidos", fmt_id_total_left)
-    # Post-write "Total a Cobrar" en columna VALOR DECLARADO alineado a la derecha
-    fmt_valdec_total = wb.add_format({
-        "font_name": F_TBL, "font_size": S_TBL,
-        "align": "right", "valign": "vcenter", "bold": True,
-    })
-    ws_d.write(last_data_row, DT_START_COL + DT_VALDEC_COL, "Total a Cobrar", fmt_valdec_total)
+    ws_d.write(last_data_row, DT_START_COL + 1, "Total Pedidos", fmt_id_total_left)
 
 
     # ═══════════════════════════════════════════════════════════════
@@ -2626,7 +2621,10 @@ def main():
                 c = str(r[COL_CLIENTE]).strip()
                 l = str(r[COL_LOC]).strip()
                 if c not in t_map: t_map[c] = {}
-                if l not in t_map[c]:
+                # Forzar actualización si es BIO VET y tiene el default viejo (1500)
+                if "BIO VET" in c.upper() and t_map[c].get(l) == 1500:
+                    t_map[c][l] = 3000
+                elif l not in t_map[c]:
                     t_map[c][l] = get_tarifa_val(r, {}) # Pasar {} para obtener el default
         
         flat_data = []
